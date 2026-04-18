@@ -11,16 +11,6 @@ pub(crate) struct BrailleScreen {
     last_text: String,
 }
 
-fn is_running(name: &str) -> bool {
-    Command::new("pgrep")
-        .arg(name)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 impl BrailleScreen {
     pub fn start() -> Result<Self, Error> {
         let mut master_fd: libc::c_int = 0;
@@ -93,22 +83,19 @@ impl BrailleScreen {
         // Wait for BRLTTY to create its BrlAPI socket
         std::thread::sleep(std::time::Duration::from_secs(3));
 
-        // Only start Orca if it isn't already running
-        if !is_running("orca") {
-            let _ = Command::new("orca")
-                .args(["--replace", "--disable", "speech"])
-                .env("DISPLAY", &display)
-                .env("DBUS_SESSION_BUS_ADDRESS", &dbus)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+        // Always (re)start Orca with --replace so it connects to the
+        // new BRLTTY instance's BrlAPI socket. If Orca was already running
+        // it will be replaced in-place; if not, a fresh one starts.
+        let _ = Command::new("orca")
+            .args(["--replace", "--disable", "speech"])
+            .env("DISPLAY", &display)
+            .env("DBUS_SESSION_BUS_ADDRESS", &dbus)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
 
-            // First launch — wait for Orca to connect to BrlAPI
-            std::thread::sleep(std::time::Duration::from_secs(3));
-        } else {
-            // Orca is already running; give it a moment to reconnect to the new BRLTTY
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
+        // Wait for Orca to connect to BrlAPI
+        std::thread::sleep(std::time::Duration::from_secs(3));
 
         // Disable echo on the master pty
         unsafe {
