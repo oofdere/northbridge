@@ -20,4 +20,16 @@ pub enum Error {
     /// Failed to read a key.
     #[error("failed to read key from braille keyboard")]
     ReadKey,
+
+    /// Failed to read screen content.
+    #[error("failed to read screen content")]
+    ScreenRead,
+
+    /// Failed to send input.
+    #[error("failed to send input")]
+    Input,
+
+    /// Click target not found.
+    #[error("click target not found: {0}")]
+    ClickNotFound(String),
 }

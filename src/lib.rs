@@ -2,30 +2,26 @@
 //!
 //! A virtual braille display and keyboard for computer use.
 //!
-//! Northbridge connects to BRLTTY via BrlAPI, giving you a text interface
-//! to the braille display. Write text to the display, read key presses
-//! from the braille keyboard.
+//! Northbridge is a deafblind agent's interface to the computer.
+//! It reads the screen as text and sends input back.
 //!
 //! ## Usage
 //!
 //! ```rust,no_run
 //! use northbridge::Northbridge;
-//! use std::time::Duration;
 //!
 //! fn main() -> Result<(), northbridge::Error> {
-//!     let nb = Northbridge::connect()?;
+//!     let nb = Northbridge::new();
 //!
-//!     // display info
-//!     let (w, h) = nb.display_size();
-//!     println!("{w}x{h} cells");
+//!     // read the screen
+//!     let screen = nb.read()?;
+//!     println!("{screen}");
 //!
-//!     // write text to the display
-//!     nb.write("hello from northbridge")?;
+//!     // send a keystroke
+//!     nb.press_key("Return")?;
 //!
-//!     // read a key press (blocks up to 1s)
-//!     if let Some(key) = nb.read_key(Duration::from_secs(1))? {
-//!         println!("got key: {key:?}");
-//!     }
+//!     // click a button by name
+//!     nb.click("OK")?;
 //!
 //!     Ok(())
 //! }
@@ -33,7 +29,9 @@
 
 mod display;
 mod error;
+mod input;
 mod keys;
+mod screen;
 
 pub use display::Display;
 pub use error::Error;
@@ -44,15 +42,33 @@ use std::time::Duration;
 
 /// A virtual braille display and keyboard.
 ///
-/// Connects to BRLTTY via BrlAPI, enters TTY mode, and provides
-/// a text-based interface to the braille display and keyboard.
+/// Reads the screen as text, sends input back.
+/// Optionally connects to BRLTTY via BrlAPI for braille display integration.
 pub struct Northbridge {
-    connection: Connection,
+    connection: Option<Connection>,
     display: Display,
     in_tty_mode: bool,
 }
 
+impl Default for Northbridge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Northbridge {
+    /// Create a new northbridge instance.
+    ///
+    /// Works without BRLTTY — screen reading and input always available.
+    /// Call [`connect`] instead if you need braille display integration.
+    pub fn new() -> Self {
+        Self {
+            connection: None,
+            display: Display::new(0, 0),
+            in_tty_mode: false,
+        }
+    }
+
     /// Connect to BRLTTY and take control of the braille display.
     pub fn connect() -> Result<Self, Error> {
         let connection = Connection::open()?;
@@ -86,10 +102,35 @@ impl Northbridge {
         }
 
         Ok(Self {
-            connection,
+            connection: Some(connection),
             display,
             in_tty_mode: true,
         })
+    }
+
+    /// Read the current screen content as text.
+    pub fn read(&self) -> Result<String, Error> {
+        screen::read_screen()
+    }
+
+    /// Send a keystroke (e.g. "Return", "ctrl+a", "Tab").
+    pub fn press_key(&self, key: &str) -> Result<(), Error> {
+        input::press_key(key)
+    }
+
+    /// Type text as if on a keyboard.
+    pub fn type_text(&self, text: &str) -> Result<(), Error> {
+        input::type_text(text)
+    }
+
+    /// Click a UI element by name.
+    pub fn click(&self, target: &str) -> Result<String, Error> {
+        input::click_by_name(target)
+    }
+
+    /// Click at screen coordinates.
+    pub fn click_at(&self, x: i32, y: i32) -> Result<(), Error> {
+        input::click_at(x, y)
     }
 
     /// Display dimensions in cells (width, height).
@@ -97,15 +138,14 @@ impl Northbridge {
         (self.display.width, self.display.height)
     }
 
-    /// Write text to the braille display.
-    ///
-    /// Text is truncated to fit the display width.
+    /// Write text to the braille display (requires BRLTTY connection).
     pub fn write(&self, text: &str) -> Result<(), Error> {
+        let conn = self.connection.as_ref().ok_or(Error::TtyMode)?;
         let c_text = std::ffi::CString::new(text).map_err(|_| Error::InvalidText)?;
 
         let result = unsafe {
             brlapi_sys::brlapi__writeText(
-                self.connection.handle_ptr(),
+                conn.handle_ptr(),
                 brlapi_sys::BRLAPI_CURSOR_OFF as i32,
                 c_text.as_ptr(),
             )
@@ -116,13 +156,14 @@ impl Northbridge {
         Ok(())
     }
 
-    /// Write text with cursor at a specific position (0-based).
+    /// Write text with cursor at a specific position (requires BRLTTY connection).
     pub fn write_at(&self, text: &str, cursor: u32) -> Result<(), Error> {
+        let conn = self.connection.as_ref().ok_or(Error::TtyMode)?;
         let c_text = std::ffi::CString::new(text).map_err(|_| Error::InvalidText)?;
 
         let result = unsafe {
             brlapi_sys::brlapi__writeText(
-                self.connection.handle_ptr(),
+                conn.handle_ptr(),
                 cursor as i32,
                 c_text.as_ptr(),
             )
@@ -138,6 +179,7 @@ impl Northbridge {
     /// Polls with non-blocking reads until a key arrives or the timeout expires.
     /// Returns `None` if no key is pressed within the timeout.
     pub fn read_key(&self, timeout: Duration) -> Result<Option<Key>, Error> {
+        let conn = self.connection.as_ref().ok_or(Error::TtyMode)?;
         let start = std::time::Instant::now();
         let poll_interval = Duration::from_millis(10);
 
@@ -145,7 +187,7 @@ impl Northbridge {
             let mut code: brlapi_sys::brlapi_keyCode_t = 0;
 
             let result =
-                unsafe { brlapi_sys::brlapi__readKey(self.connection.handle_ptr(), 0, &mut code) };
+                unsafe { brlapi_sys::brlapi__readKey(conn.handle_ptr(), 0, &mut code) };
 
             match result {
                 1 => return Ok(Some(Key::from_code(code))),
@@ -162,11 +204,12 @@ impl Northbridge {
 
     /// Read a key press, blocking until one arrives.
     pub fn read_key_wait(&self) -> Result<Key, Error> {
+        let conn = self.connection.as_ref().ok_or(Error::TtyMode)?;
         let mut code: brlapi_sys::brlapi_keyCode_t = 0;
 
         let result = unsafe {
             brlapi_sys::brlapi__readKey(
-                self.connection.handle_ptr(),
+                conn.handle_ptr(),
                 1, // wait
                 &mut code,
             )
@@ -186,9 +229,9 @@ impl Northbridge {
 
 impl Drop for Northbridge {
     fn drop(&mut self) {
-        if self.in_tty_mode {
+        if self.in_tty_mode && let Some(ref connection) = self.connection {
             unsafe {
-                brlapi_sys::brlapi__leaveTtyMode(self.connection.handle_ptr());
+                brlapi_sys::brlapi__leaveTtyMode(connection.handle_ptr());
             }
         }
     }
