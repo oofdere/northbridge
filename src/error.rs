@@ -28,8 +28,4 @@ pub enum Error {
     /// Failed to send input.
     #[error("failed to send input")]
     Input,
-
-    /// Click target not found.
-    #[error("click target not found: {0}")]
-    ClickNotFound(String),
 }

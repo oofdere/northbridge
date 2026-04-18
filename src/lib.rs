@@ -3,7 +3,28 @@
 //! A virtual braille display and keyboard for computer use.
 //!
 //! Northbridge is a deafblind agent's interface to the computer.
-//! It reads the screen as text and sends input back.
+//! It connects to BRLTTY as a virtual braille display, receiving
+//! screen content as text and sending input back via a virtual keyboard.
+//!
+//! ## How it works
+//!
+//! The screen reader (Orca) reads the screen via AT-SPI2 and sends
+//! linearized text to BRLTTY. BRLTTY forwards it to northbridge
+//! through a pseudo-terminal. Northbridge sends keyboard input to
+//! the focused application via xdotool (simulating a regular keyboard).
+//!
+//! ```text
+//! Screen Reader (Orca)
+//!   ↓ reads screen via AT-SPI2
+//!   ↓ writes text via BrlAPI
+//! BRLTTY
+//!   ↓ TTY braille driver
+//!   ↓ writes to pty
+//! Northbridge ← read()
+//!   ↓ press_key() / type_text()
+//!   ↓ xdotool
+//! Focused Application
+//! ```
 //!
 //! ## Usage
 //!
@@ -11,17 +32,18 @@
 //! use northbridge::Northbridge;
 //!
 //! fn main() -> Result<(), northbridge::Error> {
-//!     let nb = Northbridge::new();
+//!     let mut nb = Northbridge::new()?;
 //!
-//!     // read the screen
-//!     let screen = nb.read()?;
-//!     println!("{screen}");
+//!     // read what's on the braille display
+//!     let text = nb.read()?;
+//!     println!("{text}");
 //!
-//!     // send a keystroke
-//!     nb.press_key("Return")?;
+//!     // send a keystroke to the focused application
+//!     nb.press_key("Tab")?;
 //!
-//!     // click a button by name
-//!     nb.click("OK")?;
+//!     // read the updated display
+//!     let text = nb.read()?;
+//!     println!("{text}");
 //!
 //!     Ok(())
 //! }
@@ -29,7 +51,6 @@
 
 mod display;
 mod error;
-mod input;
 mod keys;
 mod screen;
 
@@ -38,45 +59,46 @@ pub use error::Error;
 pub use keys::Key;
 
 use brlapi::Connection;
+use std::process::Command;
 use std::time::Duration;
 
 /// A virtual braille display and keyboard.
 ///
-/// Reads the screen as text, sends input back.
-/// Optionally connects to BRLTTY via BrlAPI for braille display integration.
+/// The display side reads text from Orca via BRLTTY's TTY driver.
+/// The keyboard side sends input to the focused application via xdotool.
 pub struct Northbridge {
+    screen: screen::BrailleScreen,
     connection: Option<Connection>,
     display: Display,
     in_tty_mode: bool,
 }
 
-impl Default for Northbridge {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Northbridge {
-    /// Create a new northbridge instance.
+    /// Start northbridge.
     ///
-    /// Works without BRLTTY — screen reading and input always available.
-    /// Call [`connect`] instead if you need braille display integration.
-    pub fn new() -> Self {
-        Self {
+    /// Spawns BRLTTY (with TTY braille driver + AT-SPI2 screen driver)
+    /// and Orca (screen reader). Orca reads the screen and sends text
+    /// to BRLTTY, which forwards it to northbridge through a pty.
+    pub fn new() -> Result<Self, Error> {
+        let braille_screen = screen::BrailleScreen::start()?;
+
+        Ok(Self {
+            screen: braille_screen,
             connection: None,
-            display: Display::new(0, 0),
+            display: Display::new(40, 1),
             in_tty_mode: false,
-        }
+        })
     }
 
-    /// Connect to BRLTTY and take control of the braille display.
+    /// Start northbridge with a BrlAPI connection for direct display control.
+    ///
+    /// This connects to a separately-running BRLTTY instance via BrlAPI,
+    /// allowing write/read_key operations on the braille display.
     pub fn connect() -> Result<Self, Error> {
         let connection = Connection::open()?;
-
         let (width, height) = connection.display_size()?;
         let display = Display::new(width, height);
 
-        // Enter TTY mode via raw FFI to avoid self-referential borrow
         let result = unsafe {
             brlapi_sys::brlapi__enterTtyModeWithPath(
                 connection.handle_ptr(),
@@ -87,7 +109,6 @@ impl Northbridge {
         };
         let in_tty_mode = result >= 0;
 
-        // If path-based entry failed, try default TTY
         if !in_tty_mode {
             let result = unsafe {
                 brlapi_sys::brlapi__enterTtyMode(
@@ -101,36 +122,55 @@ impl Northbridge {
             }
         }
 
+        let braille_screen = screen::BrailleScreen::start()?;
+
         Ok(Self {
+            screen: braille_screen,
             connection: Some(connection),
             display,
             in_tty_mode: true,
         })
     }
 
-    /// Read the current screen content as text.
-    pub fn read(&self) -> Result<String, Error> {
-        screen::read_screen()
+    /// Read the current braille display content as text.
+    ///
+    /// Returns whatever Orca is currently showing on the braille display —
+    /// typically the focused element or current line of the active window.
+    pub fn read(&mut self) -> Result<String, Error> {
+        self.screen.read()
     }
 
-    /// Send a keystroke (e.g. "Return", "ctrl+a", "Tab").
+    /// Send a keystroke to the focused application.
+    ///
+    /// This simulates pressing a key on the regular keyboard (not the
+    /// braille display). The key name follows xdotool syntax:
+    /// `"Return"`, `"Tab"`, `"Up"`, `"Down"`, `"space"`, `"a"`, etc.
+    /// Modifiers use `+`: `"alt+F4"`, `"ctrl+a"`, `"shift+Tab"`.
     pub fn press_key(&self, key: &str) -> Result<(), Error> {
-        input::press_key(key)
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
+        Command::new("xdotool")
+            .args(["key", "--clearmodifiers", key])
+            .env("DISPLAY", &display)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|_| Error::Input)?;
+        Ok(())
     }
 
-    /// Type text as if on a keyboard.
+    /// Type text into the focused application.
+    ///
+    /// Simulates typing each character on the regular keyboard.
     pub fn type_text(&self, text: &str) -> Result<(), Error> {
-        input::type_text(text)
-    }
-
-    /// Click a UI element by name.
-    pub fn click(&self, target: &str) -> Result<String, Error> {
-        input::click_by_name(target)
-    }
-
-    /// Click at screen coordinates.
-    pub fn click_at(&self, x: i32, y: i32) -> Result<(), Error> {
-        input::click_at(x, y)
+        let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
+        Command::new("xdotool")
+            .args(["type", "--clearmodifiers", text])
+            .env("DISPLAY", &display)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|_| Error::Input)?;
+        Ok(())
     }
 
     /// Display dimensions in cells (width, height).
@@ -138,7 +178,7 @@ impl Northbridge {
         (self.display.width, self.display.height)
     }
 
-    /// Write text to the braille display (requires BRLTTY connection).
+    /// Write text to the braille display (requires BrlAPI connection via [`connect`]).
     pub fn write(&self, text: &str) -> Result<(), Error> {
         let conn = self.connection.as_ref().ok_or(Error::TtyMode)?;
         let c_text = std::ffi::CString::new(text).map_err(|_| Error::InvalidText)?;
@@ -156,7 +196,7 @@ impl Northbridge {
         Ok(())
     }
 
-    /// Write text with cursor at a specific position (requires BRLTTY connection).
+    /// Write text with cursor at a specific position (requires BrlAPI connection).
     pub fn write_at(&self, text: &str, cursor: u32) -> Result<(), Error> {
         let conn = self.connection.as_ref().ok_or(Error::TtyMode)?;
         let c_text = std::ffi::CString::new(text).map_err(|_| Error::InvalidText)?;
@@ -174,10 +214,7 @@ impl Northbridge {
         Ok(())
     }
 
-    /// Read a key press from the braille keyboard.
-    ///
-    /// Polls with non-blocking reads until a key arrives or the timeout expires.
-    /// Returns `None` if no key is pressed within the timeout.
+    /// Read a key press from the braille keyboard (requires BrlAPI connection).
     pub fn read_key(&self, timeout: Duration) -> Result<Option<Key>, Error> {
         let conn = self.connection.as_ref().ok_or(Error::TtyMode)?;
         let start = std::time::Instant::now();
@@ -185,7 +222,6 @@ impl Northbridge {
 
         loop {
             let mut code: brlapi_sys::brlapi_keyCode_t = 0;
-
             let result =
                 unsafe { brlapi_sys::brlapi__readKey(conn.handle_ptr(), 0, &mut code) };
 
@@ -202,7 +238,7 @@ impl Northbridge {
         }
     }
 
-    /// Read a key press, blocking until one arrives.
+    /// Read a key press, blocking until one arrives (requires BrlAPI connection).
     pub fn read_key_wait(&self) -> Result<Key, Error> {
         let conn = self.connection.as_ref().ok_or(Error::TtyMode)?;
         let mut code: brlapi_sys::brlapi_keyCode_t = 0;
@@ -210,7 +246,7 @@ impl Northbridge {
         let result = unsafe {
             brlapi_sys::brlapi__readKey(
                 conn.handle_ptr(),
-                1, // wait
+                1,
                 &mut code,
             )
         };

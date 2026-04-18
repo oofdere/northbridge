@@ -1,58 +1,60 @@
 use northbridge::Northbridge;
-use std::process::Command;
 
 fn pause(ms: u64) {
     std::thread::sleep(std::time::Duration::from_millis(ms));
 }
 
 fn main() -> Result<(), northbridge::Error> {
-    let nb = Northbridge::new();
+    println!("=== northbridge: reading plasma system settings ===\n");
 
-    println!("=== northbridge: opening system settings ===\n");
-
-    // Kill any existing instance
-    let _ = Command::new("pkill")
-        .args(["-f", "gnome-control-center"])
+    // Launch KDE System Settings
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "systemsettings"])
         .status();
     pause(1000);
 
-    // Launch GNOME Settings
-    Command::new("gnome-control-center")
+    let child = std::process::Command::new("systemsettings5")
         .env("DISPLAY", ":0")
         .spawn()
-        .expect("failed to launch gnome-control-center");
+        .expect("failed to launch systemsettings5");
+    // Keep child handle alive so we can kill it later
+    let mut child = child;
 
     pause(3000);
 
-    // Step 1: Read the screen
-    println!("--- step 1: reading screen ---");
-    let screen = nb.read()?;
-    println!("{screen}");
-
-    // Step 2: Use search to find "About"
-    println!("\n--- step 2: searching for 'about' ---");
-
-    // Click the search button/icon at the top of Settings
-    nb.press_key("ctrl+f")?;
-    pause(500);
-
-    // Type "about" in the search field
-    nb.type_text("about")?;
+    // Focus the window
+    std::process::Command::new("xdotool")
+        .args(["search", "--name", "System Settings", "windowactivate"])
+        .env("DISPLAY", ":0")
+        .status()
+        .ok();
     pause(1000);
 
-    // Read search results
-    let screen = nb.read()?;
-    println!("{screen}");
+    println!("starting northbridge...");
+    let mut nb = Northbridge::new()?;
 
-    // Step 3: Press Enter or click the search result
-    println!("\n--- step 3: pressing Enter to open About ---");
-    nb.press_key("Return")?;
-    pause(2000);
+    // Read the initial display
+    println!("\n--- initial display ---");
+    let text = nb.read()?;
+    println!("display: {text}");
 
-    // Step 4: Read the About page
-    println!("\n--- step 4: reading About page ---");
-    let screen = nb.read()?;
-    println!("{screen}");
+    // Tab to the sidebar list
+    nb.press_key("Tab")?;
+    pause(800);
+    let text = nb.read()?;
+    println!("sidebar: {text}");
+
+    // Navigate all sidebar categories
+    println!("\n--- sidebar categories ---");
+    for i in 0..16 {
+        nb.press_key("Down")?;
+        pause(600);
+        let text = nb.read()?;
+        println!("  {}: {text}", i + 1);
+    }
+
+    // Clean up
+    let _ = child.kill();
 
     println!("\n=== done ===");
     Ok(())
