@@ -1,0 +1,11 @@
+[package]
+name = "northbridge"
+version = "0.1.0"
+edition = "2024"
+description = "A virtual braille display and keyboard for computer use"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+brlapi = "0.4"
+brlapi-sys = "0.4"
+thiserror = "2"
