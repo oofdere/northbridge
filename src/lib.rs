@@ -135,23 +135,28 @@ impl Northbridge {
 
     /// Read a key press from the braille keyboard.
     ///
+    /// Polls with non-blocking reads until a key arrives or the timeout expires.
     /// Returns `None` if no key is pressed within the timeout.
-    pub fn read_key(&self, _timeout: Duration) -> Result<Option<Key>, Error> {
-        let mut code: brlapi_sys::brlapi_keyCode_t = 0;
+    pub fn read_key(&self, timeout: Duration) -> Result<Option<Key>, Error> {
+        let start = std::time::Instant::now();
+        let poll_interval = Duration::from_millis(10);
 
-        // Non-blocking read
-        let result = unsafe {
-            brlapi_sys::brlapi__readKey(
-                self.connection.handle_ptr(),
-                0, // don't wait
-                &mut code,
-            )
-        };
+        loop {
+            let mut code: brlapi_sys::brlapi_keyCode_t = 0;
 
-        match result {
-            0 => Ok(None),
-            1 => Ok(Some(Key::from_code(code))),
-            _ => Err(Error::ReadKey),
+            let result =
+                unsafe { brlapi_sys::brlapi__readKey(self.connection.handle_ptr(), 0, &mut code) };
+
+            match result {
+                1 => return Ok(Some(Key::from_code(code))),
+                0 => {
+                    if start.elapsed() >= timeout {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(poll_interval);
+                }
+                _ => return Err(Error::ReadKey),
+            }
         }
     }
 
