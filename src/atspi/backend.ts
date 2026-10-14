@@ -12,6 +12,7 @@ import type {
 } from '../backend.ts';
 import { DBusConnection, DBusError, Variant } from '../dbus/connection.ts';
 import { NorthbridgeError, StaleElementError } from '../errors.ts';
+import { sleep } from '../util.ts';
 import type { NodeInfo, NumericValue, Rect } from '../model.ts';
 import {
   capabilitiesOf,
@@ -30,6 +31,7 @@ export interface AtspiHandle extends NodeHandle {
 }
 
 const ROOT_PATH = '/org/a11y/atspi/accessible/root';
+const GTK4_ACTIVATE_DELAY = 270;
 const NULL_PATH = '/org/a11y/atspi/null';
 const REGISTRY = 'org.a11y.atspi.Registry';
 
@@ -70,6 +72,7 @@ export class AtspiBackend implements Backend {
   readonly a11y: DBusConnection;
   private readonly callTimeout: number;
   private readonly pids = new Map<string, Promise<number | undefined>>();
+  private readonly toolkits = new Map<string, Promise<{ name: string; version: string } | null>>();
   private readonly actionNames = new Map<string, Promise<ActionInfo[]>>();
 
   private constructor(session: DBusConnection, a11y: DBusConnection, options: AtspiOptions) {
@@ -81,6 +84,7 @@ export class AtspiBackend implements Backend {
       const [name, , newOwner] = msg.body as string[];
       if (!newOwner) {
         this.pids.delete(name);
+        for (const key of this.toolkits.keys()) if (key.startsWith(`${name}/`)) this.toolkits.delete(key);
         for (const key of this.actionNames.keys()) if (key.startsWith(`${name}/`)) this.actionNames.delete(key);
       }
     });
@@ -299,7 +303,18 @@ export class AtspiBackend implements Backend {
     }
   }
 
-  async toolkit(app: NodeHandle): Promise<{ name: string; version: string } | null> {
+  /** The app's UI toolkit ("GTK" 4.14.5, "Qt" …), cached per app. */
+  toolkit(node: NodeHandle): Promise<{ name: string; version: string } | null> {
+    const app = this.appOf(node);
+    let toolkit = this.toolkits.get(app.key);
+    if (!toolkit) {
+      toolkit = this.fetchToolkit(app);
+      this.toolkits.set(app.key, toolkit);
+    }
+    return toolkit;
+  }
+
+  private async fetchToolkit(app: NodeHandle): Promise<{ name: string; version: string } | null> {
     try {
       const [props] = (await this.call(this.appOf(app), IFACE.Properties, 'GetAll', 's', ['org.a11y.atspi.Application'])) as [
         Record<string, unknown>,
@@ -384,7 +399,20 @@ export class AtspiBackend implements Backend {
 
   async doAction(node: NodeHandle, index: number): Promise<boolean> {
     const [ok] = await this.call(node, IFACE.Action, 'DoAction', 'i', [index]);
+    if (ok && (await this.activatesLater(node, index).catch(() => false))) await sleep(GTK4_ACTIVATE_DELAY);
     return Boolean(ok);
+  }
+
+  /**
+   * GTK 4 buttons answer the "click" action with gtk_widget_activate(), which shows the button
+   * pressed for 250ms and only then emits "clicked". Wait it out, so whatever comes next (typing,
+   * reading, another click) happens after the click really did.
+   */
+  private async activatesLater(node: NodeHandle, index: number): Promise<boolean> {
+    const toolkit = await this.toolkit(node);
+    if (!toolkit || toolkit.name.toUpperCase() !== 'GTK' || !toolkit.version.startsWith('4.')) return false;
+    const [actions, info] = await Promise.all([this.actions(node), this.info(node)]);
+    return actions[index]?.name.toLowerCase() === 'click' && (info.nativeRole === 'push button' || info.nativeRole === 'toggle button');
   }
 
   async setText(node: NodeHandle, text: string): Promise<boolean> {

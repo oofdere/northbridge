@@ -367,6 +367,7 @@ export class Element {
       }
     }
     // No (working) editable-text interface: do it the way a person would.
+    await this.desktop.activateWindowOf(this);
     await this.focus();
     const keyboard = this.desktop.keyboard;
     await keyboard.press('ControlOrMeta+a');
@@ -380,6 +381,7 @@ export class Element {
 
   /** Focus the element and type text key by key, as a person would. */
   async type(text: string, options: TypeOptions = {}): Promise<void> {
+    if (this.desktop.hasInput()) await this.desktop.activateWindowOf(this);
     await this.focus();
     if (this.desktop.hasInput()) {
       await this.desktop.keyboard.type(text, options);
@@ -395,6 +397,7 @@ export class Element {
 
   /** Focus the element and press a key or combination ("Enter", "Control+a"). */
   async press(key: string): Promise<void> {
+    if (this.desktop.hasInput()) await this.desktop.activateWindowOf(this);
     await this.focus();
     if (this.desktop.hasInput()) {
       await this.desktop.keyboard.press(key);
