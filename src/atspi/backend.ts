@@ -73,14 +73,17 @@ export class AtspiBackend implements Backend {
 
   readonly session: DBusConnection;
   readonly a11y: DBusConnection;
+  readonly sessionId: string;
   private readonly callTimeout: number;
   private readonly pids = new Map<string, Promise<number | undefined>>();
   private readonly toolkits = new Map<string, Promise<{ name: string; version: string } | null>>();
   private readonly actionNames = new Map<string, Promise<ActionInfo[]>>();
 
-  private constructor(session: DBusConnection, a11y: DBusConnection, options: AtspiOptions) {
+  private constructor(session: DBusConnection, a11y: DBusConnection, address: string, options: AtspiOptions) {
     this.session = session;
     this.a11y = a11y;
+    // Bus unique names (":1.42") restart from scratch with each accessibility bus; its guid doesn't.
+    this.sessionId = /guid=([0-9a-f]+)/.exec(address)?.[1] ?? address;
     this.callTimeout = options.callTimeout ?? 5000;
     // Forget per-app caches when an app leaves the bus.
     a11y.onSignal({ interface: 'org.freedesktop.DBus', member: 'NameOwnerChanged' }, (msg) => {
@@ -133,7 +136,7 @@ export class AtspiBackend implements Backend {
     // Let scripts exit when they are done, without an explicit close().
     session.unref();
     a11y.unref();
-    return new AtspiBackend(session, a11y, options);
+    return new AtspiBackend(session, a11y, address, options);
   }
 
   handle(bus: string, path: string): AtspiHandle {

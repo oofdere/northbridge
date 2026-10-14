@@ -30,6 +30,17 @@ export class RefRegistry {
     return /^(@|\[ref=)?e\d+\]?$/.test(s.trim());
   }
 
+  /** Take over refs from another registry (e.g. one saved by an earlier process). */
+  merge(other: RefRegistry): void {
+    const data = other.toJSON();
+    this.counter = Math.max(this.counter, data.counter);
+    for (const [ref, key] of Object.entries(data.refs)) {
+      if (this.keyToRef.has(key) || this.refToKey.has(ref)) continue;
+      this.refToKey.set(ref, key);
+      this.keyToRef.set(key, ref);
+    }
+  }
+
   forget(predicate: (key: string) => boolean): void {
     for (const [key, ref] of this.keyToRef) {
       if (predicate(key)) {

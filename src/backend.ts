@@ -56,6 +56,8 @@ export interface RawImage {
 
 export interface Backend {
   readonly name: string;
+  /** Identifies this accessibility session; element keys are only meaningful within it. */
+  readonly sessionId: string;
 
   apps(): Promise<AppHandle[]>;
   info(node: NodeHandle): Promise<NodeInfo>;

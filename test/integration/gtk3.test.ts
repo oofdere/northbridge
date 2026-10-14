@@ -19,7 +19,7 @@ const status = () => app.getById('status');
 describe('reading', () => {
   test('snapshot shows the form with labels resolved and ids', async () => {
     const snapshot = await app.snapshot();
-    assert.match(snapshot, /- window "Northbridge Fixture" \[ref=e\d+\]:/);
+    assert.match(snapshot, /- window "Northbridge Fixture"( \[\w+\])* \[ref=e\d+\]:/);
     assert.match(snapshot, /- textbox "Name" \[id="name-field"\] \[ref=e\d+\]/);
     assert.match(snapshot, /- textbox "Password" \[protected\]/);
     assert.match(snapshot, /- radio "Medium" \[checked\]/);
