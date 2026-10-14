@@ -1,0 +1,51 @@
+{
+  "name": "northbridge",
+  "version": "0.1.0",
+  "description": "Puppeteer for the whole desktop. Drive any app through the OS accessibility tree — for testing your apps, and for agents using the computer.",
+  "keywords": [
+    "accessibility",
+    "a11y",
+    "at-spi",
+    "automation",
+    "computer-use",
+    "agents",
+    "mcp",
+    "testing",
+    "desktop",
+    "playwright",
+    "puppeteer"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oofdere/northbridge.git"
+  },
+  "type": "module",
+  "bin": {
+    "northbridge": "./dist/cli/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test 'test/unit/**/*.test.ts'",
+    "test:integration": "scripts/desktop.sh node --test --test-concurrency=1 'test/integration/**/*.test.ts'",
+    "nb": "node src/cli/main.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2"
+  }
+}
