@@ -140,3 +140,23 @@ test('reports bad selectors helpfully', () => {
   assert.throws(() => parseSelector('button[frobbed]'), /Unknown state "frobbed"/);
   assert.throws(() => parseSelector(''), /Empty selector/);
 });
+
+test('a wrapper around a same-named control matches once, as the inner control', () => {
+  const gtk4 = tree({
+    role: 'window',
+    name: 'Calculator',
+    children: [
+      {
+        role: 'button',
+        name: 'Main Menu',
+        states: S('haspopup'),
+        children: [{ role: 'button', name: 'Main Menu', id: 'inner', children: [{ role: 'generic' }] }],
+      },
+      { role: 'button', name: 'Undo', children: [{ role: 'text', name: 'Undo' }] },
+    ],
+  });
+  const found = evaluate(parseSelector('button "Main Menu"'), [gtk4], env);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].info.id, 'inner');
+  assert.equal(evaluate(parseSelector('button'), [gtk4], env).length, 2);
+});

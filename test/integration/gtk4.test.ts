@@ -51,3 +51,13 @@ test('mouse clicks land on GTK 4 widgets', { skip: !hasCalculator && 'gnome-calc
 test('history shows up in the snapshot', { skip: !hasCalculator && 'gnome-calculator not installed' }, async () => {
   await expect(calc.getByRole('list').getByText('6×7')).toBeVisible();
 });
+
+test('popover menus, with item names from their labels', { skip: !hasCalculator && 'gnome-calculator not installed' }, async () => {
+  await calc.getByRole('button', { name: 'Main Menu' }).click();
+  const scientific = calc.getByRole('menuitemradio', { name: 'Scientific' });
+  await expect(calc.getByRole('menuitemradio', { name: 'Automatic' })).toBeChecked();
+  await scientific.click();
+  await calc.getByRole('button', { name: 'Main Menu' }).click();
+  await expect(scientific).toBeChecked();
+  await desktop.keyboard.press('Escape');
+});

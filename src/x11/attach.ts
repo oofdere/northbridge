@@ -35,10 +35,12 @@ export async function attachX11(backend: AtspiBackend): Promise<void> {
 
   const windowOf = async (node: NodeHandle): Promise<NodeHandle | null> => {
     let cur: NodeHandle | null = node;
+    let below: NodeHandle | null = null;
     for (let i = 0; cur && i < 100; i++) {
       const info = await backend.info(cur);
       if (WINDOW_ROLES.has(info.role)) return cur;
-      if (info.role === 'application') return null;
+      if (info.role === 'application') return below;
+      below = cur;
       cur = await backend.parent(cur);
     }
     return null;

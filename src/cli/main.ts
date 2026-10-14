@@ -1,5 +1,6 @@
 // northbridge: drive desktop apps through their accessibility trees from the command line.
 
+import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,8 +47,10 @@ Apps
                              another process, --no-wait); use -- before the app's own flags
   close <app>                Ask an app to quit
 
-Agents
+Agents and CI
   mcp                        Serve these tools over MCP (stdio)
+  headless <command…>        Run a command in a throwaway desktop (Xvfb, D-Bus, AT-SPI), e.g.
+                             northbridge headless -- npm test
 
 Targets are refs from a snapshot (e12) or selectors that read like snapshot lines:
   'button "Save"'   '#submit'   'dialog "Confirm" >> button "OK"'   'checkbox [checked]'
@@ -118,6 +121,23 @@ function saveRefs(file: string, refs: RefRegistry): void {
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(refs), { mode: 0o600 });
   renameSync(tmp, file);
+}
+
+/** Run a command inside scripts/desktop.sh's throwaway desktop. */
+function headless(command: string[]): Promise<number> {
+  if (!command.length) {
+    process.stderr.write('Usage: northbridge headless -- <command...>\n');
+    return Promise.resolve(2);
+  }
+  const script = new URL('../../scripts/desktop.sh', import.meta.url);
+  return new Promise((resolve) => {
+    const child = spawn('bash', [script.pathname, ...command], { stdio: 'inherit' });
+    child.on('error', (err) => {
+      process.stderr.write(`Error: ${err.message}\n`);
+      resolve(1);
+    });
+    child.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+  });
 }
 
 function need(args: string[], count: number, usage: string): void {
@@ -248,6 +268,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     await serve({ version: version() });
     return 0;
   }
+  if (command === 'headless') return headless(args);
 
   let desktop: Desktop | undefined;
   let file: string | undefined;

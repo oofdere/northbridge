@@ -156,10 +156,13 @@ export class Element {
   /** The window (or dialog) containing this element. */
   async window(): Promise<Element | null> {
     let cur: NodeHandle | null = this.handle;
+    let below: NodeHandle | null = null;
     for (let i = 0; cur && i < 200; i++) {
       const info = await this.backend.info(cur);
       if (WINDOW_ROLES.has(info.role)) return new Element(this.desktop, cur);
-      if (info.role === 'application') return null;
+      // Whatever sits directly under the application is a top-level window.
+      if (info.role === 'application') return below ? new Element(this.desktop, below) : null;
+      below = cur;
       cur = await this.backend.parent(cur);
     }
     return null;
@@ -500,22 +503,44 @@ export class Element {
         `No option ${typeof option === 'object' && 'index' in option ? `#${option.index}` : JSON.stringify(String(option))} in ${describeNode(tree, this.desktop.refs)}. ${names.length ? `Options: ${names.join(', ')}` : 'It has no options.'}`,
       );
     }
+    // A combo box has really changed only once it shows the option; other containers just select.
+    const label = normalizeText(target.name || target.text || '');
+    const isCombo = tree.info.role === 'combobox';
+    const committed = async () => {
+      if (!isCombo) return true;
+      const shown = normalizeText(await this.text().catch(() => ''));
+      return shown === label || normalizeText(await this.name().catch(() => '')) === label;
+    };
+    const settled = async () => {
+      for (let i = 0; i < 6; i++) {
+        if (await committed()) return true;
+        await sleep(50);
+      }
+      return false;
+    };
     // Prefer the Selection interface: first on the control itself (a GTK combo box selects its
     // active row that way), then on the option's container (lists, tab lists).
     const index = await this.backend.indexInParent(target.handle).catch(() => -1);
     if (index >= 0) {
       for (const holder of new Set([tree, target.parent ?? tree])) {
         if (!holder.info.capabilities.has('selection')) continue;
-        if (await this.backend.selectChild(holder.handle, index).catch(() => false)) return;
+        if ((await this.backend.selectChild(holder.handle, index).catch(() => false)) && (await settled())) return;
       }
     }
-    // Otherwise open it and click the option, like a person.
+    // Otherwise open it and pick the option, like a person: Qt only commits a combo box choice
+    // from a real click (or Enter) in its popup.
     const optionEl = new Element(this.desktop, target.handle);
-    if (!target.info.states.has('showing')) {
+    if (!(await optionEl.isVisible())) {
       await this.click();
       await this.waitUntil(() => optionEl.isVisible(), 'its options to appear');
     }
-    await optionEl.click();
+    await optionEl.click(this.desktop.hasInput() ? { method: 'mouse' } : {});
+    if (await settled()) return;
+    if (this.desktop.hasInput()) {
+      await this.desktop.keyboard.press('Enter');
+      if (await settled()) return;
+    }
+    throw new NotSupportedError(`Picked ${JSON.stringify(label)} in ${describeNode(tree, this.desktop.refs)}, but it didn't take`);
   }
 
   async expand(): Promise<void> {

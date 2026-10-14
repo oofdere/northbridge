@@ -177,6 +177,33 @@ export class AtspiBackend implements Backend {
     return value;
   }
 
+  /**
+   * Several properties at once: one GetAll where that's safe, else one Get each. Qt 5 crashes on
+   * Properties.GetAll (any interface), so Qt apps get the slow, safe path.
+   */
+  private async properties(node: NodeHandle, iface: string, names: string[]): Promise<Record<string, unknown>> {
+    if (!(await this.getAllCrashes(node))) {
+      const [props] = (await this.call(node, IFACE.Properties, 'GetAll', 's', [iface])) as [Record<string, unknown>];
+      return props;
+    }
+    const values = await Promise.all(
+      names.map((name) =>
+        this.property(node, iface, name).catch((err) => {
+          if (err instanceof StaleElementError) throw err;
+          return undefined;
+        }),
+      ),
+    );
+    return Object.fromEntries(names.map((name, i) => [name, values[i]]));
+  }
+
+  private getAllCrashes(node: NodeHandle): Promise<boolean> {
+    return this.toolkit(node).then(
+      (t) => !t || t.name.toUpperCase().startsWith('QT'),
+      () => true,
+    );
+  }
+
   private ref([bus, path]: [string, string]): AtspiHandle | null {
     if (!bus || path === NULL_PATH) return null;
     return this.handle(bus, path);
@@ -203,12 +230,12 @@ export class AtspiBackend implements Backend {
   }
 
   async info(node: NodeHandle): Promise<NodeInfo> {
-    const [[props], [role], [stateBits], [interfaces]] = (await Promise.all([
-      this.call(node, IFACE.Properties, 'GetAll', 's', [IFACE.Accessible]),
+    const [props, [role], [stateBits], [interfaces]] = (await Promise.all([
+      this.properties(node, IFACE.Accessible, ['Name', 'Description', 'ChildCount', 'AccessibleId']),
       this.call(node, IFACE.Accessible, 'GetRole'),
       this.call(node, IFACE.Accessible, 'GetState'),
       this.call(node, IFACE.Accessible, 'GetInterfaces'),
-    ])) as [[Record<string, unknown>], [number], [number[]], [string[]]];
+    ])) as [Record<string, unknown>, [number], [number[]], [string[]]];
     const states = normalizeStates(stateBits, role);
     let normalized = normalizedRole(role);
     // GTK4 gives application windows the "application" role; only the app root really is one.
@@ -266,7 +293,11 @@ export class AtspiBackend implements Backend {
 
   async text(node: NodeHandle, maxLength?: number): Promise<string | null> {
     try {
-      const [text] = await this.call(node, IFACE.Text, 'GetText', 'ii', [0, maxLength ?? -1]);
+      // Ask for exactly what's there: LibreOffice returns nothing for an end offset past the text.
+      const count = Number(await this.property(node, IFACE.Text, 'CharacterCount'));
+      if (!count) return '';
+      const end = maxLength === undefined ? count : Math.min(count, maxLength);
+      const [text] = await this.call(node, IFACE.Text, 'GetText', 'ii', [0, end]);
       return String(text);
     } catch (err) {
       if (err instanceof StaleElementError) throw err;
@@ -276,7 +307,7 @@ export class AtspiBackend implements Backend {
 
   async value(node: NodeHandle): Promise<NumericValue | null> {
     try {
-      const [props] = (await this.call(node, IFACE.Properties, 'GetAll', 's', [IFACE.Value])) as [Record<string, unknown>];
+      const props = await this.properties(node, IFACE.Value, ['CurrentValue', 'MinimumValue', 'MaximumValue', 'MinimumIncrement', 'Text']);
       const value: NumericValue = {
         current: Number(props.CurrentValue ?? 0),
         min: Number(props.MinimumValue ?? 0),
@@ -329,19 +360,13 @@ export class AtspiBackend implements Backend {
   }
 
   private async fetchToolkit(app: NodeHandle): Promise<{ name: string; version: string } | null> {
-    try {
-      const [props] = (await this.call(this.appOf(app), IFACE.Properties, 'GetAll', 's', ['org.a11y.atspi.Application'])) as [
-        Record<string, unknown>,
-      ];
-      return { name: String(props.ToolkitName ?? ''), version: String(props.Version ?? '') };
-    } catch {
-      try {
-        const name = await this.property(this.appOf(app), 'org.a11y.atspi.Application', 'ToolkitName');
-        return { name: String(name), version: '' };
-      } catch {
-        return null;
-      }
-    }
+    // One property at a time: this is what decides whether GetAll is safe to use.
+    const root = this.appOf(app);
+    const [name, version] = await Promise.all([
+      this.property(root, 'org.a11y.atspi.Application', 'ToolkitName').catch(() => null),
+      this.property(root, 'org.a11y.atspi.Application', 'Version').catch(() => ''),
+    ]);
+    return name === null ? null : { name: String(name), version: String(version ?? '') };
   }
 
   actions(node: NodeHandle): Promise<ActionInfo[]> {

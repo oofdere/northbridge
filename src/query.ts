@@ -139,6 +139,22 @@ function visibleChildren(n: TreeNode): TreeNode[] {
   return out;
 }
 
+/**
+ * A wrapper whose only content is a same-named element (GTK 4 menu buttons wrap a toggle button)
+ * is one control as far as people can tell; snapshots print just the inner one, and so do matches.
+ */
+function wrapsSameNamed(outer: TreeNode, inner: TreeNode): boolean {
+  if (!outer.name || normalizeText(outer.name) !== normalizeText(inner.name)) return false;
+  let current = outer;
+  for (let depth = 0; depth < 6; depth++) {
+    const children = visibleChildren(current).filter((c) => !(c.info.role === 'text' && normalizeText(c.name || c.text || '') === normalizeText(outer.name)));
+    if (children.length !== 1) return false;
+    current = children[0];
+    if (current === inner) return true;
+  }
+  return false;
+}
+
 function inDocumentOrder(nodes: Iterable<TreeNode>): TreeNode[] {
   const unique = new Map<TreeNode, true>();
   for (const n of nodes) unique.set(n, true);
@@ -168,6 +184,7 @@ export function evaluate(query: Query, context: TreeNode[], env: EvalContext): T
         let result = inDocumentOrder(found);
         // Text searches report the innermost element holding the text (a label, not its button).
         if (step.text && !step.roles) result = result.filter((n) => !result.some((m) => m !== n && containsNode(n, m)));
+        else if (result.length > 1) result = result.filter((n) => !result.some((m) => m !== n && wrapsSameNamed(n, m)));
         current = result;
         break;
       }

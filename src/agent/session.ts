@@ -105,6 +105,19 @@ export class Session {
     return { text, data: { action: verb, target: description, changes: changes?.text ?? null } };
   }
 
+  /** Like act(), for input that goes wherever focus is: report changes in the active window's app. */
+  private async actOnFocus(verb: string, run: () => Promise<void>): Promise<CommandResult> {
+    const window = this.trackChanges ? await this.desktop.activeWindow().catch(() => null) : null;
+    const root = window ? this.desktop.backend.appOf(window.handle) : null;
+    const before = root ? await this.snapshotOf(root).catch(() => null) : null;
+    await run();
+    if (!root || before === null) return { text: verb };
+    const after = await this.settledSnapshotOf(root);
+    if (after === null) return { text: `${verb}\nThe app closed.` };
+    const changes = diffSnapshots(before, after);
+    return { text: `${verb}\n${changes.text || 'No visible changes.'}`, data: { action: verb, changes: changes.text } };
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Seeing
 
@@ -215,9 +228,10 @@ export class Session {
   /** Type into a target, or into whatever has focus when there's no target. */
   async type(target: string | undefined, text: string, options: TargetOptions & { submit?: boolean } = {}) {
     if (!target) {
-      await this.desktop.keyboard.type(text);
-      if (options.submit) await this.desktop.keyboard.press('Enter');
-      return { text: `Typed ${JSON.stringify(text)}${options.submit ? ' and pressed Enter' : ''}` };
+      return this.actOnFocus(`Typed ${JSON.stringify(text)}${options.submit ? ' and pressed Enter' : ''}`, async () => {
+        await this.desktop.keyboard.type(text);
+        if (options.submit) await this.desktop.keyboard.press('Enter');
+      });
     }
     return this.act(await this.locate(target, options), 'Typed into', async (el) => {
       await el.type(text);
@@ -228,8 +242,9 @@ export class Session {
   /** Press keys in order ("Tab", "Control+s"); focus a target first if given. */
   async press(keys: string[], target?: string, options: TargetOptions = {}) {
     if (!target) {
-      for (const key of keys) await this.desktop.keyboard.press(key);
-      return { text: `Pressed ${keys.join(', ')}` };
+      return this.actOnFocus(`Pressed ${keys.join(', ')}`, async () => {
+        for (const key of keys) await this.desktop.keyboard.press(key);
+      });
     }
     return this.act(await this.locate(target, options), `Pressed ${keys.join(', ')} in`, async (el) => {
       for (const key of keys) await el.press(key);

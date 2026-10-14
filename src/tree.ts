@@ -4,7 +4,7 @@
 
 import type { Backend, NodeHandle } from './backend.ts';
 import { StaleElementError } from './errors.ts';
-import type { NodeInfo, NumericValue, Role } from './model.ts';
+import { INTERACTIVE_ROLES, type NodeInfo, type NumericValue, type Role, STRUCTURAL_ROLES } from './model.ts';
 
 export interface TreeNode {
   handle: NodeHandle;
@@ -69,12 +69,17 @@ const TEXT_IF_UNNAMED_ROLES: ReadonlySet<Role> = new Set<Role>([
   'treeitem', 'document', 'status', 'statusbar', 'alert', 'tooltip', 'term', 'definition', 'note', 'log',
 ]);
 const VALUE_ROLES: ReadonlySet<Role> = new Set<Role>(['slider', 'spinbutton', 'progressbar', 'meter', 'scrollbar']);
+// Roles whose name may come from a separate label (labelledBy), e.g. GTK 4 menu items.
 const LABELLED_ROLES: ReadonlySet<Role> = new Set<Role>([
-  'textbox', 'combobox', 'spinbutton', 'slider', 'checkbox', 'radio', 'switch', 'listbox', 'list',
-  'tree', 'table', 'treegrid', 'progressbar', 'meter', 'button', 'image', 'document', 'terminal',
+  ...INTERACTIVE_ROLES, 'image', 'progressbar', 'meter', 'document', 'terminal', 'listbox', 'list', 'tree',
+  'table', 'treegrid', 'tablist', 'menu', 'menubar', 'toolbar', 'dialog', 'window', 'alert', 'group',
+  'region', 'heading', 'tabpanel',
 ]);
 
 function makeNode(handle: NodeHandle, info: NodeInfo, parent: TreeNode | null): TreeNode {
+  // An application's children are its top-level windows, whatever role the toolkit gives them
+  // (Qt reports a plain top-level QWidget as a "filler").
+  if (parent?.info.role === 'application' && STRUCTURAL_ROLES.has(info.role)) info = { ...info, role: 'window' };
   return {
     handle,
     info,
@@ -227,9 +232,13 @@ async function enrich(backend: Backend, root: TreeNode, options: WalkOptions): P
         (async () => {
           const relations = await backend.relations(n.handle).catch(() => []);
           const labels = relations.find((r) => r.type === 'labelledBy')?.targets ?? [];
-          const names = await Promise.all(
-            labels.map(async (h) => byKey.get(h.key)?.info.name ?? (await backend.info(h).then((i) => i.name, () => ''))),
-          );
+          // A label's words are its name, or failing that its text (GTK 4.14 menu labels have no name).
+          const labelText = async (h: NodeHandle): Promise<string> => {
+            const known = byKey.get(h.key);
+            const name = known ? known.info.name : await backend.info(h).then((i) => i.name, () => '');
+            return name || ((await backend.text(h, 200).catch(() => null)) ?? '');
+          };
+          const names = await Promise.all(labels.map(labelText));
           n.labels = names.map((l) => l.trim().replace(/:$/, '')).filter(Boolean);
           if (!name && n.labels.length) n.name = n.labels.join(' ');
         })(),

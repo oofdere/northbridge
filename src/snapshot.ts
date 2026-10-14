@@ -34,6 +34,12 @@ const CONTEXT_ROLES: ReadonlySet<Role> = new Set<Role>([
 
 const quote = (s: string) => JSON.stringify(s);
 
+/** Items that, unnamed, are best described by the text inside them. */
+const CONTENT_NAMED_ROLES: ReadonlySet<Role> = new Set<Role>([
+  'listitem', 'treeitem', 'cell', 'row', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'button',
+  'link', 'columnheader', 'rowheader',
+]);
+
 /** The role to print: unnamed wrappers are flattened anyway, named ones read better as "group". */
 function displayRole(n: TreeNode): string {
   if (n.info.role === 'generic' || n.info.role === 'unknown') return 'group';
@@ -76,8 +82,27 @@ function formatNumber(v: number): string {
   return Number.isInteger(v) ? String(v) : String(Math.round(v * 1e4) / 1e4);
 }
 
-function displayValue(n: TreeNode, maxText: number): string | undefined {
+/** The text inside an element, for naming items whose words live in child labels. */
+function contentText(n: TreeNode): string {
+  const parts: string[] = [];
+  const visit = (node: TreeNode) => {
+    for (const c of node.children) {
+      const t = c.info.role === 'text' || c.info.role === 'paragraph' ? (c.name || c.text || '').trim() : '';
+      if (t) parts.push(t);
+      else visit(c);
+    }
+  };
+  visit(n);
+  return collapseWhitespace(parts.join(' '));
+}
+
+function displayValue(n: TreeNode, maxText: number, opts?: Resolved): string | undefined {
   if (n.value) return n.value.text ? quote(n.value.text) : formatNumber(n.value.current);
+  // Interactive snapshots leave out labels, so say what an unnamed item contains.
+  if (opts?.interactive && !n.name && !n.text && CONTENT_NAMED_ROLES.has(n.info.role)) {
+    const content = contentText(n);
+    if (content) return quote(truncate(content, maxText));
+  }
   if (n.text) {
     const text = n.text.replace(/\uFFFC/g, '').trim();
     if (!text || normalizeText(text) === normalizeText(n.name)) return undefined;
@@ -92,7 +117,7 @@ function line(n: TreeNode, refs: RefRegistry | null, opts: Resolved, extraStates
   let s = `- ${displayRole(n)}`;
   if (n.name) s += ` ${quote(truncate(collapseWhitespace(n.name), 150))}`;
   for (const st of new Set([...displayStates(n), ...extraStates])) s += ` [${st}]`;
-  const value = displayValue(n, opts.maxTextLength);
+  const value = displayValue(n, opts.maxTextLength, opts);
   const desc = collapseWhitespace(n.info.description);
   if (desc && normalizeText(desc) !== normalizeText(n.name) && quote(desc) !== value && desc !== value) {
     s += ` [desc=${quote(truncate(desc, 100))}]`;
@@ -108,6 +133,8 @@ function line(n: TreeNode, refs: RefRegistry | null, opts: Resolved, extraStates
 function isMeaningful(n: TreeNode, opts: Resolved): boolean {
   const { role, states } = n.info;
   if (isDesktop(n)) return false;
+  // Where keyboard input goes is always worth knowing, even if it's an empty paragraph.
+  if (states.has('focused')) return true;
   if (opts.interactive) {
     return isInteractive(n) || (CONTEXT_ROLES.has(role) && !!n.name) || role === 'window' || role === 'dialog' || role === 'application' || role === 'menu';
   }
