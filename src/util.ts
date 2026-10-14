@@ -3,10 +3,15 @@ export const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 /** Collapse whitespace and unify look-alike punctuation so names compare the way people read them. */
 export function normalizeText(s: string): string {
   return s
-    .replace(/…/g, '...')
-    .replace(/[   ]/g, ' ')
+    .replace(/\u2026/g, '...')
+    .replace(/[\u00a0\u2007\u202f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Collapse runs of whitespace, for display. */
+export function collapseWhitespace(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
 }
 
 export function truncate(s: string, max: number): string {

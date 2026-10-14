@@ -280,6 +280,9 @@ class Parser {
         case 'text':
           match.text = value;
           break;
+        case 'label':
+          match.label = value;
+          break;
         case 'desc':
         case 'description':
           match.description = value;

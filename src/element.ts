@@ -39,6 +39,13 @@ const PRIMARY_ACTIONS = ['click', 'press', 'jump', 'toggle', 'check', 'uncheck',
 const EXPAND_ACTIONS = ['expand', 'expand or contract', 'expand or collapse', 'open', 'press', 'toggle'];
 const COLLAPSE_ACTIONS = ['collapse', 'expand or contract', 'expand or collapse', 'close', 'press', 'toggle'];
 const TEXT_INPUT_ROLES = new Set(['textbox', 'terminal', 'document', 'spinbutton']);
+const SELECTABLE_ITEM_ROLES = new Set(['listitem', 'treeitem', 'cell', 'row', 'tab']);
+
+/**
+ * Synthesized input reaches the app over X while our accessibility requests travel over D-Bus,
+ * so the app may handle them in either order. A moment's pause keeps "click, then read" honest.
+ */
+const settle = () => sleep(40);
 const OPTION_ROLES = new Set(['menuitem', 'menuitemradio', 'menuitemcheckbox', 'listitem', 'treeitem', 'tab', 'cell', 'row', 'radio']);
 
 export class Element {
@@ -122,7 +129,7 @@ export class Element {
     const info = await this.info();
     if (info.capabilities.has('text')) {
       const text = await this.backend.text(this.handle);
-      if (text !== null && (text.replace(/￼/g, '').trim() || !info.name)) return text.replace(/￼/g, '');
+      if (text !== null && (text.replace(/\uFFFC/g, '').trim() || !info.name)) return text.replace(/\uFFFC/g, '');
     }
     return info.name;
   }
@@ -241,16 +248,21 @@ export class Element {
   }
 
   /**
-   * Click it. By default this performs the element's own accessibility action (no mouse needed,
-   * works on covered or off-screen windows) and falls back to a real click at its centre.
+   * Click it. By default (`method: 'auto'`) this uses whichever is more reliable for the app's
+   * toolkit: the element's own accessibility action (works on covered or off-screen windows, and
+   * without any input synthesis), or a real pointer click (for toolkits whose accessibility
+   * actions can freeze behind a modal dialog). Either way it falls back to the other.
    */
   async click(options: ClickOptions = {}): Promise<void> {
     const { button = 'left', clickCount = 1, method = 'auto' } = options;
     const plain = button === 'left' && !options.modifiers?.length && !options.position;
-    if (method !== 'mouse' && plain) {
-      const done = clickCount === 2 ? await this.semanticDoubleClick() : clickCount === 1 ? await this.semanticClick() : false;
-      if (done) return;
+    if (method === 'mouse' || (!plain && method === 'auto')) {
+      await this.mouseClick(options);
+      return;
     }
+    if (method === 'auto' && clickCount === 1 && (await this.pointerIsSafer()) && (await this.tryMouseClick(options))) return;
+    const done = clickCount === 2 ? await this.semanticDoubleClick() : clickCount === 1 ? await this.semanticClick() : false;
+    if (done) return;
     if (method === 'action') {
       throw new NotSupportedError(`${await this.describe()} has no accessibility action for this click; use method: 'mouse'`);
     }
@@ -259,6 +271,25 @@ export class Element {
 
   async dblclick(options: Omit<ClickOptions, 'clickCount'> = {}): Promise<void> {
     await this.click({ ...options, clickCount: 2 });
+  }
+
+  private async pointerIsSafer(): Promise<boolean> {
+    if (!this.desktop.hasInput()) return false;
+    const info = await this.info();
+    // Clicking into text means focusing it, and list rows are selected precisely: both stay semantic.
+    if (TEXT_INPUT_ROLES.has(info.role)) return false;
+    if (info.states.has('selectable') && SELECTABLE_ITEM_ROLES.has(info.role)) return false;
+    return this.backend.prefersPointerClicks(this.handle).catch(() => false);
+  }
+
+  private async tryMouseClick(options: ClickOptions): Promise<boolean> {
+    try {
+      await this.mouseClick(options);
+      return true;
+    } catch (err) {
+      if (err instanceof NotSupportedError) return false;
+      throw err;
+    }
   }
 
   private async semanticClick(): Promise<boolean> {
@@ -303,10 +334,13 @@ export class Element {
     const parent = await this.backend.parent(this.handle);
     if (!parent) return false;
     const pinfo = await this.backend.info(parent);
-    if (!pinfo.capabilities.has('selection')) return false;
+    if (!pinfo.capabilities.has('selection') && !pinfo.capabilities.has('table')) return false;
     const index = await this.backend.indexInParent(this.handle);
     if (index < 0) return false;
-    return this.backend.selectChild(parent, index).catch(() => false);
+    if (await this.backend.selectChild(parent, index).catch(() => false)) return true;
+    // GTK 3 tree views only take selectChild when they have a single column.
+    if (pinfo.capabilities.has('table')) return this.backend.selectTableRow(parent, index).catch(() => false);
+    return false;
   }
 
   /** Where a mouse click lands: the centre, or `position` relative to the top-left corner. */
@@ -314,8 +348,14 @@ export class Element {
     await this.backend.scrollIntoView(this.handle).catch(() => false);
     const box = await this.bounds();
     if (!box) throw new NotSupportedError(`${await this.describe()} has no on-screen position to click`);
-    if (position) return { x: box.x + position.x, y: box.y + position.y };
-    return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+    const point = position
+      ? { x: box.x + position.x, y: box.y + position.y }
+      : { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
+    const screen = this.backend.screenBounds;
+    if (screen && (point.x < screen.x || point.y < screen.y || point.x >= screen.x + screen.width || point.y >= screen.y + screen.height)) {
+      throw new NotSupportedError(`${await this.describe()} is off screen at (${point.x}, ${point.y})`);
+    }
+    return point;
   }
 
   private async mouseClick(options: ClickOptions): Promise<void> {
@@ -330,6 +370,7 @@ export class Element {
     } finally {
       for (const m of [...modifiers].reverse()) await keyboard.up(m);
     }
+    await settle();
   }
 
   /** Move the mouse over the element. */
@@ -341,6 +382,7 @@ export class Element {
 
   /** Give the element keyboard focus. */
   async focus(): Promise<void> {
+    if ((await this.info()).states.has('focused')) return;
     if (await this.backend.focus(this.handle).catch(() => false)) return;
     await this.desktop.activateWindowOf(this);
     if (await this.backend.focus(this.handle).catch(() => false)) return;
@@ -383,12 +425,18 @@ export class Element {
   async type(text: string, options: TypeOptions = {}): Promise<void> {
     if (this.desktop.hasInput()) await this.desktop.activateWindowOf(this);
     await this.focus();
+    // Toolkits select a field's text when it gains focus; typing should add to it, not replace it.
+    const info = await this.info();
+    if (info.capabilities.has('text')) {
+      const length = ((await this.backend.text(this.handle)) ?? '').length;
+      await this.backend.setCaret(this.handle, length).catch(() => false);
+    }
     if (this.desktop.hasInput()) {
       await this.desktop.keyboard.type(text, options);
+      await settle();
       return;
     }
     // No input synthesis on this display server: insert at the caret instead.
-    const info = await this.info();
     if (!info.capabilities.has('editableText')) throw this.desktop.noInputError('type into this element');
     const caret = await this.backend.caretOffset(this.handle).catch(() => -1);
     const position = caret >= 0 ? caret : ((await this.backend.text(this.handle)) ?? '').length;
@@ -401,6 +449,7 @@ export class Element {
     await this.focus();
     if (this.desktop.hasInput()) {
       await this.desktop.keyboard.press(key);
+      await settle();
       return;
     }
     // Enter in a text field means "activate" — that one we can do without a keyboard.

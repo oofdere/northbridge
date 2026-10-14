@@ -20,6 +20,8 @@ export interface TreeNode {
   omitted: number;
   /** Children exist but weren't fetched (depth limit). */
   unexpanded?: boolean;
+  /** Text of the labels that label this node (from labelledBy relations), when fetched. */
+  labels?: string[];
   /** Text contents, when fetched. */
   text?: string | null;
   /** Numeric value, when fetched. */
@@ -39,8 +41,11 @@ export interface WalkOptions {
   text?: boolean;
   /** Fetch numeric values of sliders, spinbuttons and progress bars. Default true. */
   values?: boolean;
-  /** Name unnamed controls after their labels. Default true. */
-  labels?: boolean;
+  /**
+   * Resolve labelledBy relations: `true` (default) names unnamed controls after their labels,
+   * `'all'` also records the labels of controls that have names of their own.
+   */
+  labels?: boolean | 'all';
   maxTextLength?: number;
 }
 
@@ -217,7 +222,7 @@ async function enrich(backend: Backend, root: TreeNode, options: WalkOptions): P
         ),
       );
     }
-    if (wantLabels && !name && LABELLED_ROLES.has(role)) {
+    if (wantLabels && (!name || wantLabels === 'all') && LABELLED_ROLES.has(role)) {
       jobs.push(
         (async () => {
           const relations = await backend.relations(n.handle).catch(() => []);
@@ -225,8 +230,8 @@ async function enrich(backend: Backend, root: TreeNode, options: WalkOptions): P
           const names = await Promise.all(
             labels.map(async (h) => byKey.get(h.key)?.info.name ?? (await backend.info(h).then((i) => i.name, () => ''))),
           );
-          const label = names.filter(Boolean).join(' ').trim();
-          if (label) n.name = label.replace(/:$/, '');
+          n.labels = names.map((l) => l.trim().replace(/:$/, '')).filter(Boolean);
+          if (!name && n.labels.length) n.name = n.labels.join(' ');
         })(),
       );
     }

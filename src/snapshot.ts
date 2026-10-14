@@ -10,7 +10,7 @@
 import { INTERACTIVE_ROLES, type Role, STRUCTURAL_ROLES, WINDOW_ROLES } from './model.ts';
 import type { RefRegistry } from './refs.ts';
 import { type TreeNode, isDesktop } from './tree.ts';
-import { normalizeText, truncate } from './util.ts';
+import { collapseWhitespace, normalizeText, truncate } from './util.ts';
 
 export interface SnapshotOptions {
   /** Only list things you can interact with (plus the windows and menus around them). */
@@ -79,7 +79,7 @@ function formatNumber(v: number): string {
 function displayValue(n: TreeNode, maxText: number): string | undefined {
   if (n.value) return n.value.text ? quote(n.value.text) : formatNumber(n.value.current);
   if (n.text) {
-    const text = n.text.replace(/￼/g, '').trim();
+    const text = n.text.replace(/\uFFFC/g, '').trim();
     if (!text || normalizeText(text) === normalizeText(n.name)) return undefined;
     return quote(truncate(text, maxText));
   }
@@ -90,14 +90,16 @@ type Resolved = Required<Omit<SnapshotOptions, 'annotate'>> & Pick<SnapshotOptio
 
 function line(n: TreeNode, refs: RefRegistry | null, opts: Resolved, extraStates: string[] = []): string {
   let s = `- ${displayRole(n)}`;
-  if (n.name) s += ` ${quote(truncate(normalizeText(n.name), 150))}`;
+  if (n.name) s += ` ${quote(truncate(collapseWhitespace(n.name), 150))}`;
   for (const st of new Set([...displayStates(n), ...extraStates])) s += ` [${st}]`;
-  const desc = normalizeText(n.info.description);
-  if (desc && desc !== normalizeText(n.name)) s += ` [desc=${quote(truncate(desc, 100))}]`;
+  const value = displayValue(n, opts.maxTextLength);
+  const desc = collapseWhitespace(n.info.description);
+  if (desc && normalizeText(desc) !== normalizeText(n.name) && quote(desc) !== value && desc !== value) {
+    s += ` [desc=${quote(truncate(desc, 100))}]`;
+  }
   if (n.info.id) s += ` [id=${quote(n.info.id)}]`;
   for (const note of opts.annotate?.(n) ?? []) s += ` [${note}]`;
   if (refs && opts.refs && !isDesktop(n)) s += ` [ref=${refs.refFor(n.handle.key)}]`;
-  const value = displayValue(n, opts.maxTextLength);
   if (value !== undefined) s += `: ${value}`;
   return s;
 }
@@ -141,6 +143,17 @@ function collapseSameNamed(n: TreeNode, opts: Resolved): { node: TreeNode; extra
   return { node, extra };
 }
 
+const labelText = (n: TreeNode) => normalizeText(n.name || n.text || '').replace(/:$/, '');
+
+/** A label right next to the control it names ("Volume" beside slider "Volume") says nothing new. */
+function labelsNeighbour(list: TreeNode[], i: number): boolean {
+  const n = list[i];
+  if (n.info.role !== 'text' || n.children.length) return false;
+  const text = labelText(n);
+  if (!text) return false;
+  return [list[i - 1], list[i + 1]].some((m) => m && m.info.role !== 'text' && isInteractive(m) && labelText(m) === text);
+}
+
 /** Children to print, with structural wrappers flattened away. */
 function meaningfulChildren(n: TreeNode, opts: Resolved): TreeNode[] {
   const out: TreeNode[] = [];
@@ -152,7 +165,7 @@ function meaningfulChildren(n: TreeNode, opts: Resolved): TreeNode[] {
     }
   };
   visit(n);
-  return out;
+  return out.filter((_, i) => !labelsNeighbour(out, i));
 }
 
 function omittedCount(n: TreeNode, opts: Resolved): number {

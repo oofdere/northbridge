@@ -29,6 +29,7 @@ export async function attachX11(backend: AtspiBackend): Promise<void> {
   const input = xtest ? await X11Input.create(x, xtest.major) : undefined;
   if (input) backend.input = input;
   backend.screenshot = (rect?: Rect) => captureScreen(x, rect);
+  backend.screenBounds = { x: 0, y: 0, width: x.screen.width, height: x.screen.height };
 
   const windows = new X11Windows(x);
 
@@ -43,9 +44,16 @@ export async function attachX11(backend: AtspiBackend): Promise<void> {
     return null;
   };
 
+  // X window ids don't change while a window lives, so remember them (and check they're still there).
+  const known = new Map<string, number>();
   const xWindowFor = async (atspiWindow: NodeHandle): Promise<number | null> => {
+    const cached = known.get(atspiWindow.key);
+    if (cached && (await x.getWindowAttributes(cached).then((a) => a.mapState === 'viewable', () => false))) return cached;
     const [info, pid] = await Promise.all([backend.info(atspiWindow), backend.pidOf(backend.appOf(atspiWindow))]);
-    return windows.find(pid, info.name);
+    const found = await windows.find(pid, info.name);
+    if (found) known.set(atspiWindow.key, found);
+    else known.delete(atspiWindow.key);
+    return found;
   };
 
   backend.activateWindow = async (window: NodeHandle) => {

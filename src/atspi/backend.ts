@@ -32,6 +32,7 @@ export interface AtspiHandle extends NodeHandle {
 
 const ROOT_PATH = '/org/a11y/atspi/accessible/root';
 const GTK4_ACTIVATE_DELAY = 270;
+const ACTION_REPLY_GRACE = 1000;
 const NULL_PATH = '/org/a11y/atspi/null';
 const REGISTRY = 'org.a11y.atspi.Registry';
 
@@ -41,6 +42,7 @@ const IFACE = {
   Component: 'org.a11y.atspi.Component',
   EditableText: 'org.a11y.atspi.EditableText',
   Selection: 'org.a11y.atspi.Selection',
+  Table: 'org.a11y.atspi.Table',
   Text: 'org.a11y.atspi.Text',
   Value: 'org.a11y.atspi.Value',
   Properties: 'org.freedesktop.DBus.Properties',
@@ -65,6 +67,7 @@ export interface AtspiOptions {
 export class AtspiBackend implements Backend {
   readonly name = 'atspi';
   input?: InputDriver;
+  screenBounds?: Rect;
   screenshot?: (rect?: Rect) => Promise<RawImage>;
   activateWindow?: (window: NodeHandle) => Promise<boolean>;
 
@@ -143,12 +146,20 @@ export class AtspiBackend implements Backend {
     return this.handle(key.slice(0, slash), key.slice(slash));
   }
 
-  private async call(node: NodeHandle, iface: string, member: string, signature = '', body: unknown[] = []): Promise<unknown[]> {
+  private async call(
+    node: NodeHandle,
+    iface: string,
+    member: string,
+    signature = '',
+    body: unknown[] = [],
+    timeout = this.callTimeout,
+    background = false,
+  ): Promise<unknown[]> {
     const { bus, path } = node as AtspiHandle;
     try {
       return await this.a11y.call(
         { destination: bus, path, interface: iface, member, signature, body },
-        { timeout: this.callTimeout, noAutoStart: true },
+        { timeout, noAutoStart: true, background },
       );
     } catch (err) {
       if (err instanceof DBusError && GONE_ERRORS.has(err.type)) {
@@ -398,9 +409,16 @@ export class AtspiBackend implements Backend {
   }
 
   async doAction(node: NodeHandle, index: number): Promise<boolean> {
-    const [ok] = await this.call(node, IFACE.Action, 'DoAction', 'i', [index]);
-    if (ok && (await this.activatesLater(node, index).catch(() => false))) await sleep(GTK4_ACTIVATE_DELAY);
-    return Boolean(ok);
+    // Toolkits run the action's handler before replying. If that handler opens a modal dialog
+    // (gtk_dialog_run), the reply only comes once the dialog closes, so don't wait for it forever.
+    const reply = this.call(node, IFACE.Action, 'DoAction', 'i', [index], 10 * 60_000, true).then(([ok]) => Boolean(ok));
+    const result = await Promise.race([reply, sleep(ACTION_REPLY_GRACE).then(() => 'running' as const)]);
+    if (result === 'running') {
+      reply.catch(() => {});
+      return true;
+    }
+    if (result && (await this.activatesLater(node, index).catch(() => false))) await sleep(GTK4_ACTIVATE_DELAY);
+    return result;
   }
 
   /**
@@ -457,6 +475,29 @@ export class AtspiBackend implements Backend {
   async deselectChild(container: NodeHandle, childIndex: number): Promise<boolean> {
     const [ok] = await this.call(container, IFACE.Selection, 'DeselectChild', 'i', [childIndex]);
     return Boolean(ok);
+  }
+
+  async selectTableRow(table: NodeHandle, childIndex: number): Promise<boolean> {
+    const [row] = await this.call(table, IFACE.Table, 'GetRowAtIndex', 'i', [childIndex]);
+    if (Number(row) < 0) return false;
+    const [ok] = await this.call(table, IFACE.Table, 'AddRowSelection', 'i', [row]);
+    return Boolean(ok);
+  }
+
+  async setCaret(node: NodeHandle, offset: number): Promise<boolean> {
+    const [ok] = await this.call(node, IFACE.Text, 'SetCaretOffset', 'i', [offset]);
+    return Boolean(ok);
+  }
+
+  async prefersPointerClicks(node: NodeHandle): Promise<boolean> {
+    // GTK 4 and Qt answer accessibility requests from their own event loops; everything that
+    // goes through the ATK bridge (GTK 3, Firefox, Chromium, LibreOffice, Java) does not.
+    const toolkit = await this.toolkit(node);
+    if (!toolkit) return true;
+    const name = toolkit.name.toUpperCase();
+    if (name === 'QT') return false;
+    if (name === 'GTK' && toolkit.version.startsWith('4.')) return false;
+    return true;
   }
 
   launchEnvironment(): Record<string, string> {

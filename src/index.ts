@@ -18,3 +18,4 @@ export { RefRegistry } from './refs.ts';
 export type { SnapshotOptions } from './snapshot.ts';
 export { ROLES, STATES, normalizeRole, type NodeInfo, type NumericValue, type Point, type Rect, type Role, type State } from './model.ts';
 export type { Backend, InputDriver, MouseButton, NodeHandle, RawImage } from './backend.ts';
+export { expect, Assertions, type ExpectOptions } from './expect.ts';

@@ -84,6 +84,16 @@ export interface Backend {
   scrollIntoView(node: NodeHandle): Promise<boolean>;
   selectChild(container: NodeHandle, childIndex: number): Promise<boolean>;
   deselectChild(container: NodeHandle, childIndex: number): Promise<boolean>;
+  /** Select the row holding a table's `childIndex`-th child (for tables where selectChild won't). */
+  selectTableRow(table: NodeHandle, childIndex: number): Promise<boolean>;
+  /** Move the text caret (and clear the selection). */
+  setCaret(node: NodeHandle, offset: number): Promise<boolean>;
+  /**
+   * Whether a real pointer click is the safer way to click this node. Toolkits that run action
+   * handlers inside the accessibility request (the ATK bridge) freeze their whole accessibility
+   * tree if that handler opens a modal dialog; a real click doesn't.
+   */
+  prefersPointerClicks(node: NodeHandle): Promise<boolean>;
 
   /** Recreate a handle from its key (for refs that outlive a process, e.g. in the CLI). */
   handleFromKey(key: string): NodeHandle;
@@ -91,6 +101,8 @@ export interface Backend {
   /** Raise a window and give it keyboard focus. */
   activateWindow?(window: NodeHandle): Promise<boolean>;
   input?: InputDriver;
+  /** The screen area that synthesized input can reach. */
+  screenBounds?: Rect;
   screenshot?(rect?: Rect): Promise<RawImage>;
   /** Environment variables that make freshly launched apps expose their accessibility tree. */
   launchEnvironment(): Record<string, string>;

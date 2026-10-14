@@ -9,7 +9,7 @@ import { Element } from './element.ts';
 import { NorthbridgeError, NotSupportedError, TimeoutError } from './errors.ts';
 import { Keyboard, Mouse } from './input.ts';
 import { Locator, type ByRoleOptions, type RoleLike, type TextOptions } from './locator.ts';
-import { type Rect, WINDOW_ROLES } from './model.ts';
+import { type Rect, type State, WINDOW_ROLES } from './model.ts';
 import { encodePng } from './png.ts';
 import { isDescendantOf, processName, splitCommand } from './process.ts';
 import { RefRegistry } from './refs.ts';
@@ -263,7 +263,11 @@ export class Desktop {
   async activateWindowOf(element: Element): Promise<void> {
     if (!this.backend.activateWindow) return;
     const window = await element.window().catch(() => null);
-    if (window) await this.backend.activateWindow(window.handle).catch(() => false);
+    if (!window) return;
+    // Leave an active window alone: moving focus would close its open menus and popovers.
+    const states = await window.states().catch((): State[] => []);
+    if (states.includes('active')) return;
+    await this.backend.activateWindow(window.handle).catch(() => false);
   }
 
   // ---------------------------------------------------------------------------------------------

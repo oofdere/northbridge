@@ -12,6 +12,7 @@ import {
   isNodeVisible,
   type MatchStep,
   needsHidden,
+  needsLabels,
   type Query,
   type Step,
   type TextMatcher,
@@ -139,9 +140,9 @@ export class Locator {
     return this.with({ type: 'match', text: textMatcher(text, options.exact) });
   }
 
-  /** Find a control by the label that names it. */
+  /** Find a control by the label that names it (a case-insensitive substring unless `exact`). */
   getByLabel(text: string | RegExp, options: TextOptions = {}): Locator {
-    return this.with({ type: 'match', roles: LABELLABLE_ROLES, name: textMatcher(text, options.exact) });
+    return this.with({ type: 'match', roles: LABELLABLE_ROLES, label: textMatcher(text, options.exact) });
   }
 
   /** Find by developer-assigned accessible id (AccessibleId / AXIdentifier / AutomationId). */
@@ -208,7 +209,11 @@ export class Locator {
       selfOnly = true;
     }
     const needsChildren = steps.some((s) => s.type !== 'nth');
-    const tree = await walk(backend, rootHandle, { includeHidden, maxDepth: selfOnly && !needsChildren ? 0 : undefined });
+    const tree = await walk(backend, rootHandle, {
+      includeHidden,
+      maxDepth: selfOnly && !needsChildren ? 0 : undefined,
+      labels: needsLabels(this.query) ? 'all' : true,
+    });
     if (!tree) return { tree: null, matches: [] };
     let byKey: Map<string, TreeNode> | undefined;
     const env = {
@@ -316,7 +321,7 @@ export class Locator {
     if (!step) return [];
     const pool = [...descendants(tree)].filter((n) => isNodeVisible(n));
     const sameRole = (n: TreeNode) => !step.roles || step.roles.includes(n.info.role);
-    const wanted = step.name ?? step.text;
+    const wanted = step.name ?? step.text ?? step.label;
     if (wanted && wanted.kind !== 'regex') {
       const target = normalizeText(wanted.value).toLowerCase();
       const scored: [TreeNode, number][] = [];

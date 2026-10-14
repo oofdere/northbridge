@@ -75,6 +75,8 @@ export interface CallOptions {
   timeout?: number;
   /** Don't auto-start the destination service. */
   noAutoStart?: boolean;
+  /** Don't keep the process alive while waiting for this reply. */
+  background?: boolean;
 }
 
 export interface SignalFilter {
@@ -92,6 +94,7 @@ interface Pending {
   reject: (err: Error) => void;
   timer: NodeJS.Timeout | undefined;
   call: MethodCall;
+  background: boolean;
 }
 
 function openSocket(addr: BusAddress): Promise<net.Socket> {
@@ -227,6 +230,8 @@ export class DBusConnection extends EventEmitter {
   private readonly signalHandlers = new Set<{ filter: SignalFilter; handler: SignalHandler }>();
   private closedError: Error | undefined;
   private weak = false;
+  /** Pending calls that should keep the process alive. */
+  private strong = 0;
 
   private constructor(socket: net.Socket, leftover: Buffer) {
     super();
@@ -381,8 +386,9 @@ export class DBusConnection extends EventEmitter {
             }, timeout)
           : undefined;
       timer?.unref?.();
-      if (this.weak && this.pending.size === 0) this.socket.ref();
-      this.pending.set(serial, { resolve, reject, timer, call });
+      const background = !!options.background;
+      if (!background && this.strong++ === 0 && this.weak) this.socket.ref();
+      this.pending.set(serial, { resolve, reject, timer, call, background });
     });
   }
 
@@ -463,14 +469,16 @@ export class DBusConnection extends EventEmitter {
   }
 
   private removePending(serial: number): void {
+    const pending = this.pending.get(serial);
+    if (!pending) return;
     this.pending.delete(serial);
-    if (this.weak && this.pending.size === 0) this.socket.unref();
+    if (!pending.background && --this.strong === 0 && this.weak) this.socket.unref();
   }
 
   /** Let the process exit while this connection is idle. Calls in flight still keep it alive. */
   unref(): void {
     this.weak = true;
-    if (this.pending.size === 0) this.socket.unref();
+    if (this.strong === 0) this.socket.unref();
   }
 
   ref(): void {

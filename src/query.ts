@@ -18,6 +18,8 @@ export interface MatchStep {
   name?: TextMatcher;
   /** Matches the accessible name, text contents or value text. */
   text?: TextMatcher;
+  /** Matches the text of a label that labels the node, or its accessible name. */
+  label?: TextMatcher;
   description?: TextMatcher;
   id?: TextMatcher;
   nativeRole?: TextMatcher;
@@ -114,6 +116,7 @@ export function matchesStep(n: TreeNode, step: MatchStep): boolean {
   if (step.roles && !step.roles.includes(n.info.role)) return false;
   if (step.name && !textMatches(step.name, n.name)) return false;
   if (step.text && !nodeTexts(n).some((t) => textMatches(step.text!, t))) return false;
+  if (step.label && ![...(n.labels ?? []), n.name].some((t) => t && textMatches(step.label!, t))) return false;
   if (step.description && !textMatches(step.description, n.info.description)) return false;
   if (step.id && !textMatches(step.id, n.info.id)) return false;
   if (step.nativeRole && !textMatches(step.nativeRole, n.info.nativeRole)) return false;
@@ -206,6 +209,16 @@ export function evaluate(query: Query, context: TreeNode[], env: EvalContext): T
   return current;
 }
 
+/** Whether any step matches on labels (which costs a relation lookup per control). */
+export function needsLabels(query: Query): boolean {
+  return query.steps.some((s) => {
+    if (s.type === 'match') return !!s.label;
+    if (s.type === 'filter') return (s.has && needsLabels(s.has)) || (s.hasNot && needsLabels(s.hasNot));
+    if (s.type === 'union' || s.type === 'intersect') return s.queries.some(needsLabels);
+    return false;
+  });
+}
+
 /** Whether any step needs nodes that aren't on screen. */
 export function needsHidden(query: Query): boolean {
   return query.steps.some((s) => {
@@ -225,6 +238,7 @@ export function formatQuery(query: Query): string {
         let s = step.roles ? (step.roles.length === 1 ? step.roles[0] : `:is(${step.roles.join(',')})`) : '';
         if (step.name) s += `${s ? ' ' : ''}${formatTextMatcher(step.name)}`;
         if (step.text) s += `:text(${formatTextMatcher(step.text)})`;
+        if (step.label) s += `[label=${formatTextMatcher(step.label)}]`;
         if (step.id) s = `#${step.id.kind === 'regex' ? step.id.value : step.id.value}${s ? ` ${s}` : ''}`;
         if (step.description) s += `[description=${formatTextMatcher(step.description)}]`;
         if (step.nativeRole) s += `[native=${formatTextMatcher(step.nativeRole)}]`;
